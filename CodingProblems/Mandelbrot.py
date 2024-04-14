@@ -65,7 +65,10 @@ screen = pygame.display.set_mode((width, height))
 
 pixel_size = 1
 x_min, x_max, y_min, y_max = -2.5, 1.5, -2, 2
-iter = 900
+iter = 500
+# Iter changes depth of search for how long a point stays within the mandelbrot set. Increasing this reduces the speed but 
+# Increases the amount of the set that can be meaningfully zoomed down to. 
+# It must be increased to meaningfully explore the julia island I have positioned for on the j key 
 
 def generate_color_palette(max_iter):
     import numpy as np
