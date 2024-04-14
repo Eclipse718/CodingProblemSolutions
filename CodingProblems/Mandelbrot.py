@@ -7,16 +7,56 @@ import numba as nb
 def mandelbrot(c, max_iter):
     output = np.empty(c.shape, dtype=np.int32)
     for i in nb.prange(c.shape[0]):
-        for j in range(c.shape[1]):
+        for j in nb.prange(c.shape[1]):
             z = c[i, j]
             for n in range(max_iter):
-                if np.abs(z) > 2:
+                if abs(z) > 2:
                     output[i, j] = n
                     break
                 z = z * z + c[i, j]
             else:
                 output[i, j] = max_iter
     return output
+
+
+'''
+The below are functions that use fastmath to improve runtime, but they come at a tradeoff of accuracy
+The check discrepancy function compares the fastmath discrepancies to the regular calculation to give the percentage of mistakes
+and the magnitude of those mistakes due to fastmath
+-
+The summary is that at low zoom levels there are fewer discrepant calculations at higher magnitudes (average ~33 difference)
+At higher zoom levels there are many more discrepancies (about 20% at max pixels are discrepant) but those discrepancies are 
+smaller on average (~3)
+
+I've decided to just reduce the iteration count and not use fastmath for the default
+Uncomment the functions and the useage in the update image function to have it print the discrepancies
+'''
+
+'''
+@nb.njit(parallel=True, fastmath=True)
+def mandelbrot_fastmath(c, max_iter):
+    output = np.empty(c.shape, dtype=np.int32)
+    for i in nb.prange(c.shape[0]):
+        for j in nb.prange(c.shape[1]):
+            z = c[i, j]
+            for n in range(max_iter):
+                if abs(z) > 2:
+                    output[i, j] = n
+                    break
+                z = z * z + c[i, j]
+            else:
+                output[i, j] = max_iter
+    return output
+
+def check_discrepancy(c, max_iter):
+    output = mandelbrot(c, max_iter)
+    output_fastmath = mandelbrot_fastmath(c, max_iter)
+    discrepancy = np.sum(output != output_fastmath)
+    total_calculations = output.size
+    percentage_discrepancy = (discrepancy / total_calculations) * 100
+    avg_magnitude_discrepancy = np.mean(np.abs(output[output != output_fastmath] - output_fastmath[output != output_fastmath]))
+    return discrepancy, percentage_discrepancy, avg_magnitude_discrepancy
+'''
 
 pygame.init()
 
@@ -25,7 +65,7 @@ screen = pygame.display.set_mode((width, height))
 
 pixel_size = 1
 x_min, x_max, y_min, y_max = -2.5, 1.5, -2, 2
-iter = 400
+iter = 900
 
 def generate_color_palette(max_iter):
     import numpy as np
@@ -62,6 +102,12 @@ def update_mandelbrot_image():
     c = xx[:, None] + yy
     img = generate_image(c, iter)
     img = np.repeat(np.repeat(img, pixel_size, axis=0), pixel_size, axis=1)
+    '''
+    discrepancy, percentage_discrepancy, avg_magnitude_discrepancy = check_discrepancy(c, iter)
+    print("Discrepancy:", discrepancy)
+    print("Percentage Discrepancy:", percentage_discrepancy)
+    print("Average Magnitude of Discrepancies:", avg_magnitude_discrepancy)
+    '''
 
 update_mandelbrot_image()
 
@@ -70,31 +116,59 @@ running = True
 is_dragging = False 
 last_x, last_y = None, None
 
-def draw_mandelbrot_path(screen, c, iter):
+def draw_mandelbrot_path(screen, c, iter, x_min, x_max, y_min, y_max, width, height):
     z = np.zeros(c.shape, dtype=np.complex128)
     prev_x, prev_y = None, None
+
+    def on_screen(x, y):
+        return 0 <= x < width and 0 <= y < height
+
     for i in range(iter):
         z = z * z + c
-        # Early exit if z becomes NaN or infinite
         if not np.isfinite(z).all():
             break
 
-        # Calculate screen coordinates
         real_part = (z.real - x_min) / (x_max - x_min) * width
         imag_part = (z.imag - y_min) / (y_max - y_min) * height
 
-        # Convert to integer coordinates and clamp to screen boundaries
-        x = int(max(0, min(real_part, width - 1)))
-        y = int(max(0, min(imag_part, height - 1)))
+        if not np.isfinite(real_part) or not np.isfinite(imag_part):
+            continue  # Skip iteration if the coordinates are not finite
+
+        x, y = int(real_part), int(imag_part)
 
         if prev_x is not None and prev_y is not None:
-            pygame.draw.line(screen, (255, 255, 255), (prev_x, prev_y), (x, y), 1)
+            if on_screen(x, y) and on_screen(prev_x, prev_y):
+                pygame.draw.line(screen, (255, 255, 255), (prev_x, prev_y), (x, y), 1)
+            else:
+                if not (on_screen(x, y) or on_screen(prev_x, prev_y)):
+                    continue
+                else:
+                    clamped_prev_x = min(max(prev_x, 0), width - 1)
+                    clamped_prev_y = min(max(prev_y, 0), height - 1)
+                    clamped_x = min(max(x, 0), width - 1)
+                    clamped_y = min(max(y, 0), height - 1)
+                    pygame.draw.line(screen, (255, 255, 255), (clamped_prev_x, clamped_prev_y), (clamped_x, clamped_y), 1)
 
-        prev_x, prev_y = x, y  # Update previous coordinates for the next iteration
+        prev_x, prev_y = x, y
 
-        # Check for escape condition after drawing the line to ensure all points are connected
         if np.abs(z) > 2:
-            break  # Escape the loop if z escapes the set
+            break
+        
+def zoom_to_julia_island():
+    global x_min, x_max, y_min, y_max
+    julia_island_x = -1.76877883727888
+    julia_island_y = -0.00173898653183
+    target_zoom = 862162921902
+    
+    x_min = -1.76877883670268
+    x_max = -1.76877883656601
+    y_min = -0.00173898590092
+    y_max = -0.00173898598867
+    
+    update_mandelbrot_image()
+    pygame.display.flip()
+
+
 
 
 
@@ -133,6 +207,9 @@ while running:
             is_drawing_path = True
         elif event.type == MOUSEBUTTONUP and event.button == 3:
             is_drawing_path = False
+        elif event.type == KEYDOWN:
+            if event.key == K_j:
+                zoom_to_julia_island()
 
     screen.fill((0, 0, 0))
     surf = pygame.surfarray.make_surface(img)
@@ -150,15 +227,25 @@ while running:
         escape_time = "Never"
     else:
         escape_time = str(iterations)
-
-    text_zoom = font.render(f'Zoom Level: {zoom_level}X', True, (255, 255, 255))
-    text_coords = font.render(f'Coord ({coord_real_part:.4f}, {coord_imag_part:.4f})', True, (255, 255, 255))
-    text_escape = font.render(f'Escape Time: {escape_time}', True, (255, 255, 255))
-
-    screen.blit(text_zoom, (610, 10))
-    screen.blit(text_coords, (610, 30))
-    screen.blit(text_escape, (610, 50))
     
+    if zoom_level > 1000000:
+        text_zoom = font.render(f'Zoom Level: {zoom_level}X', True, (0, 0, 0))
+        text_coords = font.render(f'Coord ({coord_real_part:.14f}, {coord_imag_part:.14f})', True, (0, 0, 0))
+        text_escape = font.render(f'Escape Time: {escape_time}', True, (0, 0, 0))
+        screen.blit(text_zoom, (570, 10))
+        screen.blit(text_coords, (500, 30))
+        screen.blit(text_escape, (570, 50))
+    
+    else:
+
+        text_zoom = font.render(f'Zoom Level: {zoom_level}X', True, (255, 255, 255))
+        text_coords = font.render(f'Coord ({coord_real_part:.4f}, {coord_imag_part:.4f})', True, (255, 255, 255))
+        text_escape = font.render(f'Escape Time: {escape_time}', True, (255, 255, 255))
+
+        screen.blit(text_zoom, (610, 10))
+        screen.blit(text_coords, (610, 30))
+        screen.blit(text_escape, (610, 50))
+        
     
     mouse_x, mouse_y = pygame.mouse.get_pos()
     pixel_width = (x_max - x_min) / width
@@ -168,7 +255,7 @@ while running:
 
     c = np.array([[coord_real_part + coord_imag_part * 1j]])
     if(is_drawing_path):
-        draw_mandelbrot_path(screen, c, iter)
+        draw_mandelbrot_path(screen, c, iter, x_min, x_max, y_min, y_max, width, height)
     
     
     pygame.display.flip()
